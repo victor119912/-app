@@ -2,7 +2,12 @@ package com.example.myapplication
 
 import android.content.Intent
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +19,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,7 +42,9 @@ import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.ConfirmationNumber
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventSeat
+import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LocalActivity
 import androidx.compose.material.icons.rounded.LocationOn
@@ -45,6 +53,8 @@ import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Sell
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Stars
 import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material3.AlertDialog
@@ -76,9 +86,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.example.myapplication.ui.theme.MyApplicationTheme
 import okhttp3.Call
 import okhttp3.Callback
@@ -89,6 +101,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -254,10 +268,18 @@ class MainActivity : ComponentActivity() {
                                 saveWalletTickets(walletTickets)
                                 toast("票券已加入票券夾")
                             },
+                            onUpdate = { ticket ->
+                                walletTickets = walletTickets.map { if (it.id == ticket.id) ticket else it }
+                                saveWalletTickets(walletTickets)
+                                toast("票券已更新")
+                            },
                             onDelete = { ticket ->
                                 walletTickets = walletTickets.filterNot { it.id == ticket.id }
                                 saveWalletTickets(walletTickets)
                                 toast("票券已移除")
+                            },
+                            onShare = { ticket ->
+                                shareWalletTicket(ticket)
                             }
                         )
 
@@ -552,9 +574,46 @@ class MainActivity : ComponentActivity() {
     private fun WalletScreen(
         tickets: List<WalletTicket>,
         onSave: (WalletTicket) -> Unit,
-        onDelete: (WalletTicket) -> Unit
+        onUpdate: (WalletTicket) -> Unit,
+        onDelete: (WalletTicket) -> Unit,
+        onShare: (WalletTicket) -> Unit
     ) {
         var showAddDialog by remember { mutableStateOf(false) }
+        var editingTicket by remember { mutableStateOf<WalletTicket?>(null) }
+        var keyword by remember { mutableStateOf("") }
+        var sortOption by remember { mutableStateOf(WalletSort.DateNear) }
+        var platformFilter by remember { mutableStateOf("全部") }
+        var showCalendar by remember { mutableStateOf(false) }
+        var focusedMonth by remember {
+            mutableStateOf(Calendar.getInstance().apply {
+                set(Calendar.DAY_OF_MONTH, 1)
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            })
+        }
+        val platforms = tickets
+            .map { it.platform.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .sorted()
+        val filteredTickets = tickets
+            .filter { matchesWalletQuery(it, keyword) }
+            .filter { platformFilter == "全部" || it.platform == platformFilter }
+            .let { list ->
+                when (sortOption) {
+                    WalletSort.DateNear -> list.sortedBy { parseWalletTimeMillis(it.date) }
+                    WalletSort.DateFar -> list.sortedByDescending { parseWalletTimeMillis(it.date) }
+                    WalletSort.PriceHigh -> list.sortedByDescending { it.price.toIntOrNull() ?: -1 }
+                    WalletSort.PriceLow -> list.sortedBy { it.price.toIntOrNull() ?: Int.MAX_VALUE }
+                }
+            }
+        val visibleTickets = if (showCalendar) {
+            filteredTickets.filter { isSameWalletMonth(it, focusedMonth) }
+        } else {
+            filteredTickets
+        }
 
         LazyColumn(
             modifier = Modifier
@@ -575,17 +634,97 @@ class MainActivity : ComponentActivity() {
                     onAction = { showAddDialog = true }
                 )
             }
-            if (tickets.isEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, FineLine.copy(alpha = 0.70f))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = keyword,
+                            onValueChange = { keyword = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("搜尋票券") },
+                            placeholder = { Text("活動、場地、座位、平台") },
+                            singleLine = true,
+                            leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = Cobalt,
+                                unfocusedBorderColor = Mist,
+                                cursorColor = Cobalt,
+                                focusedLabelColor = Cobalt,
+                                focusedContainerColor = Porcelain,
+                                unfocusedContainerColor = Porcelain
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { showCalendar = !showCalendar },
+                                shape = RoundedCornerShape(99.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                            ) {
+                                Icon(Icons.Rounded.CalendarMonth, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(if (showCalendar) "清單" else "月曆", fontWeight = FontWeight.SemiBold)
+                            }
+                            OutlinedButton(
+                                onClick = { sortOption = sortOption.next() },
+                                shape = RoundedCornerShape(99.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                            ) {
+                                Icon(Icons.Rounded.Sort, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(sortOption.label, fontWeight = FontWeight.SemiBold)
+                            }
+                            OutlinedButton(
+                                onClick = { platformFilter = nextPlatformFilter(platformFilter, platforms) },
+                                shape = RoundedCornerShape(99.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                            ) {
+                                Icon(Icons.Rounded.FilterList, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(platformFilter, fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                    }
+                }
+            }
+            if (showCalendar) {
                 item {
-                    EmptyStateCard(
-                        title = "票券夾是空的",
-                        message = "點選右上角新增，把你的票券資訊保存到這台裝置。"
+                    WalletCalendarCard(
+                        month = focusedMonth,
+                        tickets = filteredTickets,
+                        onPrevious = {
+                            focusedMonth = (focusedMonth.clone() as Calendar).apply { add(Calendar.MONTH, -1) }
+                        },
+                        onNext = {
+                            focusedMonth = (focusedMonth.clone() as Calendar).apply { add(Calendar.MONTH, 1) }
+                        }
                     )
                 }
             }
-            items(tickets) { ticket ->
+            if (visibleTickets.isEmpty()) {
+                item {
+                    EmptyStateCard(
+                        title = if (tickets.isEmpty()) "票券夾是空的" else "沒有符合的票券",
+                        message = if (tickets.isEmpty()) "點選右上角新增，把你的票券資訊保存到這台裝置。" else "調整搜尋、排序、平台或月份條件後再試一次。"
+                    )
+                }
+            }
+            items(visibleTickets) { ticket ->
                 WalletTicketCard(
                     ticket = ticket,
+                    onEdit = { editingTicket = ticket },
+                    onShare = { onShare(ticket) },
                     onDelete = { onDelete(ticket) }
                 )
             }
@@ -594,6 +733,7 @@ class MainActivity : ComponentActivity() {
 
         if (showAddDialog) {
             TicketFormDialog(
+                ticket = null,
                 onDismiss = { showAddDialog = false },
                 onSave = { ticket ->
                     showAddDialog = false
@@ -601,21 +741,35 @@ class MainActivity : ComponentActivity() {
                 }
             )
         }
+
+        editingTicket?.let { ticket ->
+            TicketFormDialog(
+                ticket = ticket,
+                onDismiss = { editingTicket = null },
+                onSave = { updated ->
+                    editingTicket = null
+                    onUpdate(updated)
+                }
+            )
+        }
     }
 
     @Composable
     private fun TicketFormDialog(
+        ticket: WalletTicket?,
         onDismiss: () -> Unit,
         onSave: (WalletTicket) -> Unit
     ) {
-        var title by remember { mutableStateOf("") }
-        var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.TAIWAN).format(Calendar.getInstance().time)) }
-        var location by remember { mutableStateOf("") }
-        var seat by remember { mutableStateOf("") }
-        var cast by remember { mutableStateOf("") }
-        var platform by remember { mutableStateOf("") }
-        var price by remember { mutableStateOf("") }
-        var notes by remember { mutableStateOf("") }
+        var title by remember(ticket?.id) { mutableStateOf(ticket?.title.orEmpty()) }
+        var date by remember(ticket?.id) {
+            mutableStateOf(ticket?.date ?: SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.TAIWAN).format(Calendar.getInstance().time))
+        }
+        var location by remember(ticket?.id) { mutableStateOf(ticket?.location.orEmpty()) }
+        var seat by remember(ticket?.id) { mutableStateOf(ticket?.seat.orEmpty()) }
+        var cast by remember(ticket?.id) { mutableStateOf(ticket?.cast.orEmpty()) }
+        var platform by remember(ticket?.id) { mutableStateOf(ticket?.platform.orEmpty()) }
+        var price by remember(ticket?.id) { mutableStateOf(ticket?.price.orEmpty()) }
+        var notes by remember(ticket?.id) { mutableStateOf(ticket?.notes.orEmpty()) }
 
         AlertDialog(
             onDismissRequest = onDismiss,
@@ -628,7 +782,7 @@ class MainActivity : ComponentActivity() {
                         }
                         onSave(
                             WalletTicket(
-                                id = System.currentTimeMillis(),
+                                id = ticket?.id ?: System.currentTimeMillis(),
                                 title = title.trim(),
                                 date = date.trim(),
                                 location = location.trim(),
@@ -652,7 +806,7 @@ class MainActivity : ComponentActivity() {
                 }
             },
             title = {
-                Text("新增票券", color = Ink, fontWeight = FontWeight.Black)
+                Text(if (ticket == null) "新增票券" else "編輯票券", color = Ink, fontWeight = FontWeight.Black)
             },
             text = {
                 Column(
@@ -672,6 +826,94 @@ class MainActivity : ComponentActivity() {
             containerColor = SurfaceIvory,
             shape = RoundedCornerShape(26.dp)
         )
+    }
+
+    @Composable
+    private fun WalletCalendarCard(
+        month: Calendar,
+        tickets: List<WalletTicket>,
+        onPrevious: () -> Unit,
+        onNext: () -> Unit
+    ) {
+        val days = walletCalendarDays(month)
+        val ticketCounts = tickets.groupingBy { walletDateKey(it.date) }.eachCount()
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
+            shape = RoundedCornerShape(26.dp),
+            border = BorderStroke(1.dp, FineLine.copy(alpha = 0.70f))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = onPrevious,
+                        shape = RoundedCornerShape(99.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                    ) {
+                        Text("上月", fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(
+                        walletMonthTitle(month),
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center,
+                        color = Ink,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                    OutlinedButton(
+                        onClick = onNext,
+                        shape = RoundedCornerShape(99.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                    ) {
+                        Text("下月", fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("日", "一", "二", "三", "四", "五", "六").forEach {
+                        Text(
+                            it,
+                            modifier = Modifier.weight(1f),
+                            textAlign = TextAlign.Center,
+                            color = Muted,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                days.chunked(7).forEach { week ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        week.forEach { day ->
+                            val count = ticketCounts[day.key] ?: 0
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .background(
+                                        if (day.inMonth) CobaltSoft.copy(alpha = if (count > 0) 0.90f else 0.28f) else Color.Transparent,
+                                        RoundedCornerShape(14.dp)
+                                    )
+                                    .padding(vertical = 6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    day.day.toString(),
+                                    color = if (day.inMonth) Ink else Muted.copy(alpha = 0.35f),
+                                    fontSize = 13.sp,
+                                    fontWeight = if (count > 0) FontWeight.Black else FontWeight.SemiBold
+                                )
+                                if (count > 0) {
+                                    Text("$count 張", color = Cobalt, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+            }
+        }
     }
 
     @Composable
@@ -701,7 +943,12 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun WalletTicketCard(ticket: WalletTicket, onDelete: () -> Unit) {
+    private fun WalletTicketCard(
+        ticket: WalletTicket,
+        onEdit: () -> Unit,
+        onShare: () -> Unit,
+        onDelete: () -> Unit
+    ) {
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
@@ -749,17 +996,43 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 Spacer(modifier = Modifier.height(14.dp))
-                OutlinedButton(
-                    onClick = onDelete,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose)
-                ) {
-                    Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(19.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("移除票券", fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onEdit,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = StageBlack)
+                    ) {
+                        Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("編輯", fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = onShare,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
+                    ) {
+                        Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("分享", fontWeight = FontWeight.Bold)
+                    }
+                    OutlinedButton(
+                        onClick = onDelete,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose)
+                    ) {
+                        Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("移除", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
@@ -1373,6 +1646,190 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
+    private fun matchesWalletQuery(ticket: WalletTicket, keyword: String): Boolean {
+        val query = keyword.trim().lowercase(Locale.TAIWAN)
+        if (query.isEmpty()) return true
+        return listOf(
+            ticket.title,
+            ticket.date,
+            ticket.location,
+            ticket.seat,
+            ticket.cast,
+            ticket.platform,
+            ticket.price,
+            ticket.notes
+        ).any { it.lowercase(Locale.TAIWAN).contains(query) }
+    }
+
+    private fun nextPlatformFilter(current: String, platforms: List<String>): String {
+        val options = listOf("全部") + platforms
+        val index = options.indexOf(current).takeIf { it >= 0 } ?: 0
+        return options[(index + 1) % options.size]
+    }
+
+    private fun parseWalletTimeMillis(value: String): Long {
+        val patterns = listOf("yyyy-MM-dd HH:mm", "yyyy/MM/dd HH:mm", "yyyy-MM-dd", "yyyy/MM/dd")
+        for (pattern in patterns) {
+            val parsed = runCatching {
+                SimpleDateFormat(pattern, Locale.TAIWAN).apply { isLenient = false }.parse(value.trim())
+            }.getOrNull()
+            if (parsed != null) return parsed.time
+        }
+        return Long.MAX_VALUE
+    }
+
+    private fun walletDateKey(value: String): String {
+        val time = parseWalletTimeMillis(value)
+        return if (time == Long.MAX_VALUE) "" else SimpleDateFormat("yyyy-MM-dd", Locale.TAIWAN).format(time)
+    }
+
+    private fun isSameWalletMonth(ticket: WalletTicket, month: Calendar): Boolean {
+        val time = parseWalletTimeMillis(ticket.date)
+        if (time == Long.MAX_VALUE) return false
+        val calendar = Calendar.getInstance().apply { timeInMillis = time }
+        return calendar.get(Calendar.YEAR) == month.get(Calendar.YEAR) &&
+            calendar.get(Calendar.MONTH) == month.get(Calendar.MONTH)
+    }
+
+    private fun walletMonthTitle(month: Calendar): String {
+        return SimpleDateFormat("yyyy 年 MM 月", Locale.TAIWAN).format(month.time)
+    }
+
+    private fun walletCalendarDays(month: Calendar): List<WalletCalendarDay> {
+        val first = (month.clone() as Calendar).apply {
+            set(Calendar.DAY_OF_MONTH, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val start = (first.clone() as Calendar).apply {
+            add(Calendar.DAY_OF_MONTH, -(get(Calendar.DAY_OF_WEEK) - Calendar.SUNDAY))
+        }
+        return (0 until 42).map { index ->
+            val day = (start.clone() as Calendar).apply { add(Calendar.DAY_OF_MONTH, index) }
+            WalletCalendarDay(
+                day = day.get(Calendar.DAY_OF_MONTH),
+                key = SimpleDateFormat("yyyy-MM-dd", Locale.TAIWAN).format(day.time),
+                inMonth = day.get(Calendar.MONTH) == first.get(Calendar.MONTH)
+            )
+        }
+    }
+
+    private fun shareWalletTicket(ticket: WalletTicket) {
+        val bitmap = createWalletTicketBitmap(ticket)
+        val directory = File(cacheDir, "shared_tickets").apply { mkdirs() }
+        val file = File(directory, "ticket_${ticket.id}.png")
+        FileOutputStream(file).use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(intent, "分享票券"))
+    }
+
+    private fun createWalletTicketBitmap(ticket: WalletTicket): Bitmap {
+        val width = 1080
+        val height = 1500
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = AndroidCanvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        canvas.drawColor(AndroidColor.rgb(246, 241, 232))
+        paint.color = AndroidColor.rgb(255, 252, 246)
+        canvas.drawRoundRect(RectF(72f, 90f, 1008f, 1410f), 58f, 58f, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 4f
+        paint.color = AndroidColor.rgb(216, 203, 190)
+        canvas.drawRoundRect(RectF(72f, 90f, 1008f, 1410f), 58f, 58f, paint)
+        paint.style = Paint.Style.FILL
+
+        paint.color = AndroidColor.rgb(8, 17, 31)
+        canvas.drawRoundRect(RectF(112f, 130f, 968f, 420f), 42f, 42f, paint)
+        paint.color = AndroidColor.rgb(216, 168, 78)
+        paint.textSize = 34f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText("TICKET WALLET", 150f, 205f, paint)
+
+        paint.color = AndroidColor.WHITE
+        paint.textSize = 62f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        drawWrappedText(canvas, paint, ticket.title, 150f, 285f, 760f, 78f, 2)
+
+        var y = 520f
+        y = drawShareField(canvas, paint, "日期", displayValue(ticket.date), y)
+        y = drawShareField(canvas, paint, "場地", displayValue(ticket.location), y)
+        y = drawShareField(canvas, paint, "座位", displayValue(ticket.seat), y)
+        y = drawShareField(canvas, paint, "演出者", displayValue(ticket.cast), y)
+        y = drawShareField(canvas, paint, "平台", displayValue(ticket.platform), y)
+        y = drawShareField(canvas, paint, "票價", if (ticket.price.isBlank()) "尚未紀錄" else "NT$ ${ticket.price}", y)
+
+        if (ticket.notes.isNotBlank()) {
+            paint.color = AndroidColor.rgb(232, 238, 255)
+            canvas.drawRoundRect(RectF(132f, y + 20f, 948f, y + 210f), 32f, 32f, paint)
+            paint.color = AndroidColor.rgb(36, 92, 255)
+            paint.textSize = 30f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            canvas.drawText("備註", 168f, y + 76f, paint)
+            paint.color = AndroidColor.rgb(17, 24, 39)
+            paint.textSize = 34f
+            paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+            drawWrappedText(canvas, paint, ticket.notes, 168f, y + 130f, 720f, 48f, 2)
+        }
+
+        paint.color = AndroidColor.rgb(107, 114, 128)
+        paint.textSize = 28f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        canvas.drawText("由售票資訊 App 產生", 132f, 1340f, paint)
+        return bitmap
+    }
+
+    private fun drawShareField(canvas: AndroidCanvas, paint: Paint, label: String, value: String, y: Float): Float {
+        paint.color = AndroidColor.rgb(107, 114, 128)
+        paint.textSize = 30f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText(label, 132f, y, paint)
+        paint.color = AndroidColor.rgb(17, 24, 39)
+        paint.textSize = 38f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        drawWrappedText(canvas, paint, value, 260f, y, 660f, 50f, 2)
+        return y + 118f
+    }
+
+    private fun drawWrappedText(
+        canvas: AndroidCanvas,
+        paint: Paint,
+        text: String,
+        x: Float,
+        y: Float,
+        maxWidth: Float,
+        lineHeight: Float,
+        maxLines: Int
+    ) {
+        val words = text.ifBlank { "尚未公布" }.split(Regex("\\s+"))
+        val lines = mutableListOf<String>()
+        var current = ""
+        for (word in words) {
+            val next = if (current.isEmpty()) word else "$current $word"
+            if (paint.measureText(next) <= maxWidth) {
+                current = next
+            } else {
+                if (current.isNotEmpty()) lines.add(current)
+                current = word
+            }
+        }
+        if (current.isNotEmpty()) lines.add(current)
+
+        lines.take(maxLines).forEachIndexed { index, line ->
+            val suffix = if (index == maxLines - 1 && lines.size > maxLines) "..." else ""
+            canvas.drawText(line.take(36) + suffix, x, y + index * lineHeight, paint)
+        }
+    }
+
     private fun checkHealth(onSuccess: () -> Unit, onError: () -> Unit) {
         get("/api/health", onSuccess = { onSuccess() }, onError = { onError() })
     }
@@ -1658,6 +2115,24 @@ private data class WalletTicket(
     val platform: String,
     val price: String,
     val notes: String
+)
+
+private enum class WalletSort(val label: String) {
+    DateNear("日期近"),
+    DateFar("日期遠"),
+    PriceHigh("高票價"),
+    PriceLow("低票價");
+
+    fun next(): WalletSort {
+        val values = entries
+        return values[(ordinal + 1) % values.size]
+    }
+}
+
+private data class WalletCalendarDay(
+    val day: Int,
+    val key: String,
+    val inMonth: Boolean
 )
 
 private data class SummaryStats(
