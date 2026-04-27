@@ -38,18 +38,24 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.ConfirmationNumber
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.EventSeat
 import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LocalActivity
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Logout
 import androidx.compose.material.icons.rounded.LocationOn
+import androidx.compose.material.icons.rounded.Mail
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
@@ -88,6 +94,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -132,6 +140,7 @@ private val Plum = Color(0xFF7C3AED)
 class MainActivity : ComponentActivity() {
     private val client = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    private var activeToken: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -164,6 +173,9 @@ class MainActivity : ComponentActivity() {
         var walletTickets by remember { mutableStateOf(loadWalletTickets()) }
         var keyword by remember { mutableStateOf("") }
         var loading by remember { mutableStateOf(false) }
+        var session by remember { mutableStateOf(loadSavedSession()) }
+        val currentSession = session
+        activeToken = currentSession?.token.orEmpty()
 
         fun refreshHome() {
             loading = true
@@ -182,17 +194,32 @@ class MainActivity : ComponentActivity() {
             loadVenueStats { venueStats = it }
         }
 
-        LaunchedEffect(Unit) {
-            checkHealth(
-                onSuccess = {
-                    refreshHome()
-                    refreshAnalysis()
-                },
-                onError = {
-                    loading = false
-                    toast("目前無法取得資料，請確認服務已啟動")
-                }
-            )
+        LaunchedEffect(currentSession?.token) {
+            if (currentSession != null) {
+                checkHealth(
+                    onSuccess = {
+                        refreshHome()
+                        refreshAnalysis()
+                    },
+                    onError = {
+                        loading = false
+                        toast("目前無法取得資料，請確認服務已啟動")
+                    }
+                )
+            }
+        }
+
+        if (currentSession == null) {
+            Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
+                AuthScreen(
+                    onAuthenticated = { newSession ->
+                        saveSession(newSession)
+                        session = newSession
+                        selectedTab = AppTab.Home
+                    }
+                )
+            }
+            return
         }
 
         Surface(modifier = Modifier.fillMaxSize(), color = Canvas) {
@@ -209,6 +236,7 @@ class MainActivity : ComponentActivity() {
                                 AppTab.Wallet -> Unit
                                 AppTab.Reminders -> loadReminders { reminders = it }
                                 AppTab.Analysis -> refreshAnalysis()
+                                AppTab.Account -> Unit
                             }
                         }
                     )
@@ -303,8 +331,252 @@ class MainActivity : ComponentActivity() {
                             venueStats = venueStats,
                             onRefresh = { refreshAnalysis() }
                         )
+
+                        AppTab.Account -> AccountScreen(
+                            session = currentSession,
+                            onLogout = {
+                                clearSession()
+                                activeToken = ""
+                                session = null
+                                reminders = emptyList()
+                                selectedTab = AppTab.Home
+                            },
+                            onDeleteAccount = { password ->
+                                deleteAccount(
+                                    password = password,
+                                    onSuccess = {
+                                        clearSession()
+                                        activeToken = ""
+                                        session = null
+                                        reminders = emptyList()
+                                        selectedTab = AppTab.Home
+                                        toast("帳號已註銷")
+                                    },
+                                    onError = { toast("註銷失敗，請確認密碼") }
+                                )
+                            }
+                        )
                     }
                 }
+            }
+        }
+    }
+
+    @Composable
+    private fun AuthScreen(onAuthenticated: (AuthSession) -> Unit) {
+        var mode by remember { mutableStateOf(AuthMode.Login) }
+        var email by remember { mutableStateOf("") }
+        var password by remember { mutableStateOf("") }
+        var confirmPassword by remember { mutableStateOf("") }
+        var submitting by remember { mutableStateOf(false) }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 24.dp, vertical = 32.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            PageTitle(
+                title = "登入 Ticket Flow",
+                subtitle = if (mode == AuthMode.Login) "使用你的帳號進入 App" else "註冊後即可同步提醒資料"
+            )
+            Spacer(modifier = Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = { mode = AuthMode.Login },
+                    border = BorderStroke(1.dp, if (mode == AuthMode.Login) Cobalt else FineLine)
+                ) {
+                    Text("登入", color = if (mode == AuthMode.Login) Cobalt else Ink)
+                }
+                OutlinedButton(
+                    onClick = { mode = AuthMode.Register },
+                    border = BorderStroke(1.dp, if (mode == AuthMode.Register) Cobalt else FineLine)
+                ) {
+                    Text("註冊", color = if (mode == AuthMode.Register) Cobalt else Ink)
+                }
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it },
+                        label = { Text("Email") },
+                        placeholder = { Text("name@example.com") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        leadingIcon = { Icon(Icons.Rounded.Mail, contentDescription = null) },
+                        colors = authTextFieldColors(),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("密碼") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
+                        colors = authTextFieldColors(),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (mode == AuthMode.Register) {
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            label = { Text("確認密碼") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            leadingIcon = { Icon(Icons.Rounded.Lock, contentDescription = null) },
+                            colors = authTextFieldColors(),
+                            shape = RoundedCornerShape(18.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            val finalEmail = email.trim()
+                            val finalPassword = password.trim()
+                            if (finalEmail.isEmpty() || finalPassword.isEmpty()) {
+                                toast("請輸入 email 和密碼")
+                                return@Button
+                            }
+                            if (mode == AuthMode.Register && finalPassword != confirmPassword.trim()) {
+                                toast("兩次密碼不一致")
+                                return@Button
+                            }
+                            submitting = true
+                            val payload = JSONObject()
+                                .put("email", finalEmail)
+                                .put("password", finalPassword)
+                                .toString()
+                            val path = if (mode == AuthMode.Login) "/api/auth/login" else "/api/auth/register"
+                            post(
+                                path = path,
+                                body = payload,
+                                onSuccess = { body ->
+                                    submitting = false
+                                    val authSession = JSONObject(body).toAuthSession()
+                                    onAuthenticated(authSession)
+                                    toast(if (mode == AuthMode.Login) "登入成功" else "註冊成功")
+                                },
+                                onError = { body ->
+                                    submitting = false
+                                    toast(parseApiError(body, if (mode == AuthMode.Login) "登入失敗" else "註冊失敗"))
+                                }
+                            )
+                        },
+                        enabled = !submitting,
+                        colors = ButtonDefaults.buttonColors(containerColor = Cobalt),
+                        shape = RoundedCornerShape(18.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (submitting) "處理中..." else if (mode == AuthMode.Login) "登入" else "建立帳號")
+                    }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun AccountScreen(
+        session: AuthSession,
+        onLogout: () -> Unit,
+        onDeleteAccount: (String) -> Unit
+    ) {
+        var showDeleteDialog by remember { mutableStateOf(false) }
+        var confirmPassword by remember { mutableStateOf("") }
+
+        if (showDeleteDialog) {
+            AlertDialog(
+                onDismissRequest = {
+                    showDeleteDialog = false
+                    confirmPassword = ""
+                },
+                title = { Text("註銷帳號") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("註銷後，這個帳號的提醒資料會一起刪除。")
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            label = { Text("請輸入密碼確認") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            colors = authTextFieldColors(),
+                            shape = RoundedCornerShape(18.dp)
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onDeleteAccount(confirmPassword)
+                        showDeleteDialog = false
+                        confirmPassword = ""
+                    }) {
+                        Text("確認註銷", color = Rose)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        showDeleteDialog = false
+                        confirmPassword = ""
+                    }) {
+                        Text("取消")
+                    }
+                }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            PageTitle(title = "帳號", subtitle = "管理登入狀態與帳號安全")
+            Card(
+                colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    InfoLine(Icons.Rounded.Mail, "Email", session.email)
+                    InfoLine(Icons.Rounded.Lock, "狀態", "已登入")
+                }
+            }
+            Button(
+                onClick = onLogout,
+                colors = ButtonDefaults.buttonColors(containerColor = Ink),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Rounded.Logout, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("登出")
+            }
+            OutlinedButton(
+                onClick = { showDeleteDialog = true },
+                border = BorderStroke(1.dp, Rose),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Rounded.DeleteForever, contentDescription = null, tint = Rose)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("註銷帳號", color = Rose)
             }
         }
     }
@@ -986,6 +1258,16 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    @Composable
+    private fun authTextFieldColors() = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = Cobalt,
+        unfocusedBorderColor = Mist,
+        cursorColor = Cobalt,
+        focusedLabelColor = Cobalt,
+        focusedContainerColor = Porcelain,
+        unfocusedContainerColor = Porcelain
+    )
 
     @Composable
     private fun TicketInputField(
@@ -1745,6 +2027,31 @@ class MainActivity : ComponentActivity() {
             .apply()
     }
 
+    private fun loadSavedSession(): AuthSession? {
+        val prefs = getSharedPreferences("ticket_auth", Context.MODE_PRIVATE)
+        val token = prefs.getString("token", "").orEmpty()
+        val email = prefs.getString("email", "").orEmpty()
+        val userId = prefs.getInt("user_id", 0)
+        if (token.isBlank() || email.isBlank() || userId <= 0) return null
+        return AuthSession(token = token, userId = userId, email = email)
+    }
+
+    private fun saveSession(session: AuthSession) {
+        getSharedPreferences("ticket_auth", Context.MODE_PRIVATE)
+            .edit()
+            .putString("token", session.token)
+            .putString("email", session.email)
+            .putInt("user_id", session.userId)
+            .apply()
+    }
+
+    private fun clearSession() {
+        getSharedPreferences("ticket_auth", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+    }
+
     private fun matchesWalletQuery(ticket: WalletTicket, keyword: String): Boolean {
         val query = keyword.trim().lowercase(Locale.TAIWAN)
         if (query.isEmpty()) return true
@@ -2101,6 +2408,21 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun deleteAccount(password: String, onSuccess: () -> Unit, onError: () -> Unit) {
+        val payload = JSONObject()
+            .put("password", password)
+            .toString()
+
+        request(
+            request = Request.Builder()
+                .url("$API_BASE_URL/api/auth/me")
+                .delete(payload.toRequestBody(jsonMediaType))
+                .build(),
+            onSuccess = { onSuccess() },
+            onError = { onError() }
+        )
+    }
+
     private fun get(path: String, onSuccess: (String) -> Unit, onError: (String) -> Unit) {
         request(
             request = Request.Builder().url("$API_BASE_URL$path").get().build(),
@@ -2121,7 +2443,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun request(request: Request, onSuccess: (String) -> Unit, onError: (String) -> Unit) {
-        client.newCall(request).enqueue(object : Callback {
+        val authedRequest = if (activeToken.isNotBlank() && request.header("Authorization") == null) {
+            request.newBuilder()
+                .addHeader("Authorization", "Bearer $activeToken")
+                .build()
+        } else {
+            request
+        }
+
+        client.newCall(authedRequest).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 runOnUiThread { onError(e.message ?: "network error") }
             }
@@ -2135,6 +2465,27 @@ class MainActivity : ComponentActivity() {
                 }
             }
         })
+    }
+
+    private fun JSONObject.toAuthSession(): AuthSession {
+        val user = optJSONObject("user") ?: JSONObject()
+        return AuthSession(
+            token = optString("token"),
+            userId = user.optInt("id"),
+            email = user.optString("email")
+        )
+    }
+
+    private fun parseApiError(body: String, fallback: String): String {
+        return runCatching {
+            when (JSONObject(body).optString("error")) {
+                "email_exists" -> "這個 email 已經註冊"
+                "invalid_credentials" -> "帳號或密碼錯誤"
+                "invalid_fields" -> "Email 格式或密碼長度不正確"
+                "unauthorized" -> "登入已失效，請重新登入"
+                else -> fallback
+            }
+        }.getOrDefault(fallback)
     }
 
     private fun JSONObject.toEventItem(): EventItem {
