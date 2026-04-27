@@ -1,5 +1,7 @@
 package com.example.myapplication
 
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import android.content.Intent
 import android.content.Context
 import android.graphics.Bitmap
@@ -584,6 +586,7 @@ class MainActivity : ComponentActivity() {
         var sortOption by remember { mutableStateOf(WalletSort.DateNear) }
         var platformFilter by remember { mutableStateOf("全部") }
         var showCalendar by remember { mutableStateOf(false) }
+        var selectedDateKey by remember { mutableStateOf<String?>(null) }
         var focusedMonth by remember {
             mutableStateOf(Calendar.getInstance().apply {
                 set(Calendar.DAY_OF_MONTH, 1)
@@ -610,7 +613,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         val visibleTickets = if (showCalendar) {
-            filteredTickets.filter { isSameWalletMonth(it, focusedMonth) }
+            val selected = selectedDateKey
+            if (selected == null) {
+                filteredTickets.filter { isSameWalletMonth(it, focusedMonth) }
+            } else {
+                filteredTickets.filter { walletDateKey(it.date) == selected }
+            }
         } else {
             filteredTickets
         }
@@ -668,7 +676,10 @@ class MainActivity : ComponentActivity() {
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedButton(
-                                onClick = { showCalendar = !showCalendar },
+                                onClick = {
+                                    showCalendar = !showCalendar
+                                    selectedDateKey = null
+                                },
                                 shape = RoundedCornerShape(99.dp),
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink)
                             ) {
@@ -703,11 +714,26 @@ class MainActivity : ComponentActivity() {
                     WalletCalendarCard(
                         month = focusedMonth,
                         tickets = filteredTickets,
+                        selectedDateKey = selectedDateKey,
                         onPrevious = {
                             focusedMonth = (focusedMonth.clone() as Calendar).apply { add(Calendar.MONTH, -1) }
+                            selectedDateKey = null
                         },
                         onNext = {
                             focusedMonth = (focusedMonth.clone() as Calendar).apply { add(Calendar.MONTH, 1) }
+                            selectedDateKey = null
+                        },
+                        onSelectDate = { selectedDateKey = it }
+                    )
+                }
+                item {
+                    SectionHeader(
+                        title = selectedDateKey?.let { "當日票券 $it" } ?: "本月票券",
+                        subtitle = selectedDateKey?.let { "顯示你在這一天保存的票券。" } ?: "點選月曆日期可以只看當天票券。",
+                        action = "清除",
+                        actionIcon = Icons.Rounded.Refresh,
+                        onAction = {
+                            selectedDateKey = null
                         }
                     )
                 }
@@ -770,6 +796,31 @@ class MainActivity : ComponentActivity() {
         var platform by remember(ticket?.id) { mutableStateOf(ticket?.platform.orEmpty()) }
         var price by remember(ticket?.id) { mutableStateOf(ticket?.price.orEmpty()) }
         var notes by remember(ticket?.id) { mutableStateOf(ticket?.notes.orEmpty()) }
+        fun showDateTimePicker() {
+            val calendar = calendarFromWalletDate(date)
+            DatePickerDialog(
+                this,
+                { _, year, month, dayOfMonth ->
+                    calendar.set(Calendar.YEAR, year)
+                    calendar.set(Calendar.MONTH, month)
+                    calendar.set(Calendar.DAY_OF_MONTH, dayOfMonth)
+                    TimePickerDialog(
+                        this,
+                        { _, hour, minute ->
+                            calendar.set(Calendar.HOUR_OF_DAY, hour)
+                            calendar.set(Calendar.MINUTE, minute)
+                            date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.TAIWAN).format(calendar.time)
+                        },
+                        calendar.get(Calendar.HOUR_OF_DAY),
+                        calendar.get(Calendar.MINUTE),
+                        true
+                    ).show()
+                },
+                calendar.get(Calendar.YEAR),
+                calendar.get(Calendar.MONTH),
+                calendar.get(Calendar.DAY_OF_MONTH)
+            ).show()
+        }
 
         AlertDialog(
             onDismissRequest = onDismiss,
@@ -814,7 +865,10 @@ class MainActivity : ComponentActivity() {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     TicketInputField(title, { title = it }, "活動名稱", "例如：tuki. ASIA TOUR")
-                    TicketInputField(date, { date = it }, "日期時間", "yyyy-MM-dd HH:mm")
+                    DateTimePickerField(
+                        value = date,
+                        onClick = { showDateTimePicker() }
+                    )
                     TicketInputField(location, { location = it }, "場地", "例如：台北小巨蛋")
                     TicketInputField(seat, { seat = it }, "座位", "例如：A區 12排 8號")
                     TicketInputField(cast, { cast = it }, "演出者", "例如：tuki.")
@@ -832,8 +886,10 @@ class MainActivity : ComponentActivity() {
     private fun WalletCalendarCard(
         month: Calendar,
         tickets: List<WalletTicket>,
+        selectedDateKey: String?,
         onPrevious: () -> Unit,
-        onNext: () -> Unit
+        onNext: () -> Unit,
+        onSelectDate: (String) -> Unit
     ) {
         val days = walletCalendarDays(month)
         val ticketCounts = tickets.groupingBy { walletDateKey(it.date) }.eachCount()
@@ -887,12 +943,18 @@ class MainActivity : ComponentActivity() {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         week.forEach { day ->
                             val count = ticketCounts[day.key] ?: 0
+                            val selected = day.key == selectedDateKey
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(48.dp)
+                                    .clickable(enabled = day.inMonth) { onSelectDate(day.key) }
                                     .background(
-                                        if (day.inMonth) CobaltSoft.copy(alpha = if (count > 0) 0.90f else 0.28f) else Color.Transparent,
+                                        when {
+                                            selected -> StageBlack
+                                            day.inMonth -> CobaltSoft.copy(alpha = if (count > 0) 0.90f else 0.28f)
+                                            else -> Color.Transparent
+                                        },
                                         RoundedCornerShape(14.dp)
                                     )
                                     .padding(vertical = 6.dp),
@@ -900,12 +962,21 @@ class MainActivity : ComponentActivity() {
                             ) {
                                 Text(
                                     day.day.toString(),
-                                    color = if (day.inMonth) Ink else Muted.copy(alpha = 0.35f),
+                                    color = when {
+                                        selected -> Color.White
+                                        day.inMonth -> Ink
+                                        else -> Muted.copy(alpha = 0.35f)
+                                    },
                                     fontSize = 13.sp,
                                     fontWeight = if (count > 0) FontWeight.Black else FontWeight.SemiBold
                                 )
                                 if (count > 0) {
-                                    Text("$count 張", color = Cobalt, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "$count 張",
+                                        color = if (selected) Gold else Cobalt,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -940,6 +1011,34 @@ class MainActivity : ComponentActivity() {
                 unfocusedContainerColor = Porcelain
             )
         )
+    }
+
+    @Composable
+    private fun DateTimePickerField(value: String, onClick: () -> Unit) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick),
+            colors = CardDefaults.cardColors(containerColor = Porcelain),
+            shape = RoundedCornerShape(16.dp),
+            border = BorderStroke(1.dp, Mist)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Rounded.CalendarMonth, contentDescription = null, tint = Cobalt, modifier = Modifier.size(21.dp))
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("日期時間", color = Cobalt, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(value, color = Ink, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Text("選擇", color = Muted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
     }
 
     @Composable
@@ -1676,6 +1775,13 @@ class MainActivity : ComponentActivity() {
             if (parsed != null) return parsed.time
         }
         return Long.MAX_VALUE
+    }
+
+    private fun calendarFromWalletDate(value: String): Calendar {
+        val time = parseWalletTimeMillis(value)
+        return Calendar.getInstance().apply {
+            if (time != Long.MAX_VALUE) timeInMillis = time
+        }
     }
 
     private fun walletDateKey(value: String): String {
