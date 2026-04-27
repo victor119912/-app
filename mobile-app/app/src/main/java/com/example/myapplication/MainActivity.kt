@@ -2559,8 +2559,20 @@ private enum class AppTab(val title: String, val icon: ImageVector) {
     Search("探索", Icons.Rounded.Search),
     Wallet("票券夾", Icons.Rounded.ConfirmationNumber),
     Reminders("提醒", Icons.Rounded.Notifications),
-    Analysis("洞察", Icons.Rounded.Analytics)
+    Analysis("洞察", Icons.Rounded.Analytics),
+    Account("帳號", Icons.Rounded.AccountCircle)
 }
+
+private enum class AuthMode {
+    Login,
+    Register
+}
+
+private data class AuthSession(
+    val token: String,
+    val userId: Int,
+    val email: String
+)
 
 private data class WalletTicket(
     val id: Long,
