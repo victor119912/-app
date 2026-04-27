@@ -1,6 +1,7 @@
 package com.example.myapplication
 
 import android.content.Intent
+import android.content.Context
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Build
@@ -33,7 +34,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Analytics
 import androidx.compose.material.icons.rounded.CalendarMonth
+import androidx.compose.material.icons.rounded.ConfirmationNumber
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.EventSeat
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LocalActivity
 import androidx.compose.material.icons.rounded.LocationOn
@@ -41,8 +44,10 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sell
 import androidx.compose.material.icons.rounded.Stars
 import androidx.compose.material.icons.rounded.TrendingUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -58,6 +63,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -139,6 +145,7 @@ class MainActivity : ComponentActivity() {
         var priceStats by remember { mutableStateOf(PriceStats()) }
         var timeStats by remember { mutableStateOf(TimeStats()) }
         var venueStats by remember { mutableStateOf(VenueStats()) }
+        var walletTickets by remember { mutableStateOf(loadWalletTickets()) }
         var keyword by remember { mutableStateOf("") }
         var loading by remember { mutableStateOf(false) }
 
@@ -183,6 +190,7 @@ class MainActivity : ComponentActivity() {
                             when (tab) {
                                 AppTab.Home -> refreshHome()
                                 AppTab.Search -> Unit
+                                AppTab.Wallet -> Unit
                                 AppTab.Reminders -> loadReminders { reminders = it }
                                 AppTab.Analysis -> refreshAnalysis()
                             }
@@ -236,6 +244,20 @@ class MainActivity : ComponentActivity() {
                                     toast("已加入你的搶票提醒")
                                     loadReminders { reminders = it }
                                 }
+                            }
+                        )
+
+                        AppTab.Wallet -> WalletScreen(
+                            tickets = walletTickets,
+                            onSave = { ticket ->
+                                walletTickets = listOf(ticket) + walletTickets
+                                saveWalletTickets(walletTickets)
+                                toast("票券已加入票券夾")
+                            },
+                            onDelete = { ticket ->
+                                walletTickets = walletTickets.filterNot { it.id == ticket.id }
+                                saveWalletTickets(walletTickets)
+                                toast("票券已移除")
                             }
                         )
 
@@ -521,6 +543,223 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     item { Spacer(modifier = Modifier.height(16.dp)) }
+                }
+            }
+        }
+    }
+
+    @Composable
+    private fun WalletScreen(
+        tickets: List<WalletTicket>,
+        onSave: (WalletTicket) -> Unit,
+        onDelete: (WalletTicket) -> Unit
+    ) {
+        var showAddDialog by remember { mutableStateOf(false) }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item { Spacer(modifier = Modifier.height(18.dp)) }
+            item {
+                FeatureHeader(
+                    eyebrow = "個人票券",
+                    title = "票券夾",
+                    subtitle = "把已購入或想保存的票券集中管理，支援活動、日期、場地、座位與票價紀錄。",
+                    icon = Icons.Rounded.ConfirmationNumber,
+                    accent = Gold,
+                    action = "新增",
+                    actionIcon = Icons.Rounded.LocalActivity,
+                    onAction = { showAddDialog = true }
+                )
+            }
+            if (tickets.isEmpty()) {
+                item {
+                    EmptyStateCard(
+                        title = "票券夾是空的",
+                        message = "點選右上角新增，把你的票券資訊保存到這台裝置。"
+                    )
+                }
+            }
+            items(tickets) { ticket ->
+                WalletTicketCard(
+                    ticket = ticket,
+                    onDelete = { onDelete(ticket) }
+                )
+            }
+            item { Spacer(modifier = Modifier.height(16.dp)) }
+        }
+
+        if (showAddDialog) {
+            TicketFormDialog(
+                onDismiss = { showAddDialog = false },
+                onSave = { ticket ->
+                    showAddDialog = false
+                    onSave(ticket)
+                }
+            )
+        }
+    }
+
+    @Composable
+    private fun TicketFormDialog(
+        onDismiss: () -> Unit,
+        onSave: (WalletTicket) -> Unit
+    ) {
+        var title by remember { mutableStateOf("") }
+        var date by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.TAIWAN).format(Calendar.getInstance().time)) }
+        var location by remember { mutableStateOf("") }
+        var seat by remember { mutableStateOf("") }
+        var cast by remember { mutableStateOf("") }
+        var platform by remember { mutableStateOf("") }
+        var price by remember { mutableStateOf("") }
+        var notes by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (title.trim().isEmpty()) {
+                            toast("請輸入活動名稱")
+                            return@Button
+                        }
+                        onSave(
+                            WalletTicket(
+                                id = System.currentTimeMillis(),
+                                title = title.trim(),
+                                date = date.trim(),
+                                location = location.trim(),
+                                seat = seat.trim(),
+                                cast = cast.trim(),
+                                platform = platform.trim(),
+                                price = price.trim(),
+                                notes = notes.trim()
+                            )
+                        )
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = StageBlack)
+                ) {
+                    Text("儲存", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("取消", color = Muted, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            title = {
+                Text("新增票券", color = Ink, fontWeight = FontWeight.Black)
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    TicketInputField(title, { title = it }, "活動名稱", "例如：tuki. ASIA TOUR")
+                    TicketInputField(date, { date = it }, "日期時間", "yyyy-MM-dd HH:mm")
+                    TicketInputField(location, { location = it }, "場地", "例如：台北小巨蛋")
+                    TicketInputField(seat, { seat = it }, "座位", "例如：A區 12排 8號")
+                    TicketInputField(cast, { cast = it }, "演出者", "例如：tuki.")
+                    TicketInputField(platform, { platform = it }, "售票平台", "例如：遠大售票")
+                    TicketInputField(price, { price = it }, "票價", "例如：5280")
+                    TicketInputField(notes, { notes = it }, "備註", "可填入入場提醒或付款狀態")
+                }
+            },
+            containerColor = SurfaceIvory,
+            shape = RoundedCornerShape(26.dp)
+        )
+    }
+
+    @Composable
+    private fun TicketInputField(
+        value: String,
+        onValueChange: (String) -> Unit,
+        label: String,
+        placeholder: String
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(label) },
+            placeholder = { Text(placeholder) },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = Cobalt,
+                unfocusedBorderColor = Mist,
+                cursorColor = Cobalt,
+                focusedLabelColor = Cobalt,
+                focusedContainerColor = Porcelain,
+                unfocusedContainerColor = Porcelain
+            )
+        )
+    }
+
+    @Composable
+    private fun WalletTicketCard(ticket: WalletTicket, onDelete: () -> Unit) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = SurfaceIvory),
+            shape = RoundedCornerShape(28.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+            border = BorderStroke(1.dp, FineLine.copy(alpha = 0.72f))
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .background(GoldSoft, RoundedCornerShape(99.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            displayValue(ticket.platform).take(12),
+                            color = Color(0xFF8A5A00),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(ticket.date, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(ticket.title, fontWeight = FontWeight.Black, fontSize = 20.sp, color = Ink, lineHeight = 26.sp, maxLines = 3)
+                if (ticket.cast.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(5.dp))
+                    Text(ticket.cast, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+                InfoLine(Icons.Rounded.CalendarMonth, "日期", displayValue(ticket.date))
+                InfoLine(Icons.Rounded.LocationOn, "場地", displayValue(ticket.location))
+                InfoLine(Icons.Rounded.EventSeat, "座位", displayValue(ticket.seat))
+                InfoLine(Icons.Rounded.Sell, "票價", if (ticket.price.isBlank()) "尚未紀錄" else "NT$ ${ticket.price}")
+                if (ticket.notes.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = CobaltSoft.copy(alpha = 0.72f)),
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.75f))
+                    ) {
+                        Text(ticket.notes, modifier = Modifier.padding(14.dp), color = Ink, fontSize = 13.sp, lineHeight = 19.sp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+                OutlinedButton(
+                    onClick = onDelete,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Rose)
+                ) {
+                    Icon(Icons.Rounded.DeleteOutline, contentDescription = null, modifier = Modifier.size(19.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("移除票券", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1086,6 +1325,54 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun loadWalletTickets(): List<WalletTicket> {
+        val prefs = getSharedPreferences("ticket_wallet", Context.MODE_PRIVATE)
+        val raw = prefs.getString("tickets", "[]").orEmpty()
+        return runCatching {
+            val array = JSONArray(raw)
+            val result = mutableListOf<WalletTicket>()
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                result.add(
+                    WalletTicket(
+                        id = item.optLong("id"),
+                        title = item.optString("title"),
+                        date = item.optString("date"),
+                        location = item.optString("location"),
+                        seat = item.optString("seat"),
+                        cast = item.optString("cast"),
+                        platform = item.optString("platform"),
+                        price = item.optString("price"),
+                        notes = item.optString("notes")
+                    )
+                )
+            }
+            result
+        }.getOrDefault(emptyList())
+    }
+
+    private fun saveWalletTickets(tickets: List<WalletTicket>) {
+        val array = JSONArray()
+        tickets.forEach { ticket ->
+            array.put(
+                JSONObject()
+                    .put("id", ticket.id)
+                    .put("title", ticket.title)
+                    .put("date", ticket.date)
+                    .put("location", ticket.location)
+                    .put("seat", ticket.seat)
+                    .put("cast", ticket.cast)
+                    .put("platform", ticket.platform)
+                    .put("price", ticket.price)
+                    .put("notes", ticket.notes)
+            )
+        }
+        getSharedPreferences("ticket_wallet", Context.MODE_PRIVATE)
+            .edit()
+            .putString("tickets", array.toString())
+            .apply()
+    }
+
     private fun checkHealth(onSuccess: () -> Unit, onError: () -> Unit) {
         get("/api/health", onSuccess = { onSuccess() }, onError = { onError() })
     }
@@ -1356,9 +1643,22 @@ class MainActivity : ComponentActivity() {
 private enum class AppTab(val title: String, val icon: ImageVector) {
     Home("首頁", Icons.Rounded.Home),
     Search("探索", Icons.Rounded.Search),
+    Wallet("票券夾", Icons.Rounded.ConfirmationNumber),
     Reminders("提醒", Icons.Rounded.Notifications),
     Analysis("洞察", Icons.Rounded.Analytics)
 }
+
+private data class WalletTicket(
+    val id: Long,
+    val title: String,
+    val date: String,
+    val location: String,
+    val seat: String,
+    val cast: String,
+    val platform: String,
+    val price: String,
+    val notes: String
+)
 
 private data class SummaryStats(
     val events: Int = 0,
